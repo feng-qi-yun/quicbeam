@@ -1,0 +1,35 @@
+# Build outputs
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace / vendor
+go.work
+go.work.sum
+
+# Local secrets, certs, and configs
+*.pem
+*.key
+*.crt
+*.p12
+config.local.yaml
+config.local.yml
+config.local.json
+.env
+.env.*
+
+# Logs and temporary files
+*.log
+/tmp/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
