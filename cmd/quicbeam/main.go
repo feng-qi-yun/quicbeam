@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/feng-qi-yun/quicbeam/internal/config"
+	"github.com/feng-qi-yun/quicbeam/internal/forward"
 	"github.com/feng-qi-yun/quicbeam/internal/probe"
 	"github.com/feng-qi-yun/quicbeam/internal/transport"
 )
@@ -24,9 +26,15 @@ func main() {
 
 	switch os.Args[1] {
 	case "server":
-		fmt.Println("quicbeam server: not implemented yet (see docs/architecture.md)")
+		if err := runTunnelCmd(config.RoleServer, os.Args[2:]); err != nil {
+			slog.Error("server failed", "err", err)
+			os.Exit(1)
+		}
 	case "client":
-		fmt.Println("quicbeam client: not implemented yet (see docs/architecture.md)")
+		if err := runTunnelCmd(config.RoleClient, os.Args[2:]); err != nil {
+			slog.Error("client failed", "err", err)
+			os.Exit(1)
+		}
 	case "probe":
 		if err := runProbeCmd(os.Args[2:]); err != nil {
 			slog.Error("probe failed", "err", err)
@@ -39,6 +47,39 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
+}
+
+func runTunnelCmd(role string, args []string) error {
+	fs := flag.NewFlagSet(role, flag.ExitOnError)
+	cfgPath := fs.String("config", "", "path to JSON config file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *cfgPath == "" {
+		fs.Usage()
+		return fmt.Errorf("-config is required")
+	}
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		return err
+	}
+	if cfg.Role == "" {
+		cfg.Role = role
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
+	} else if cfg.Role != role {
+		return fmt.Errorf("config role is %q, but invoked as %q", cfg.Role, role)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if role == config.RoleServer {
+		return forward.RunServer(ctx, cfg)
+	}
+	return forward.RunClient(ctx, cfg)
 }
 
 func runProbeCmd(args []string) error {

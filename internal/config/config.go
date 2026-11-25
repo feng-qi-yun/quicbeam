@@ -1,5 +1,21 @@
 package config
 
+import (
+	"encoding/json"
+	"fmt"
+	"net"
+	"os"
+	"strings"
+)
+
+const (
+	RoleServer = "server"
+	RoleClient = "client"
+
+	ProtoTCP = "tcp"
+	ProtoUDP = "udp"
+)
+
 // PortForward defines a single TCP or UDP port forwarding mapping over the QUIC tunnel.
 type PortForward struct {
 	Name   string `json:"name"`
@@ -10,13 +26,81 @@ type PortForward struct {
 
 // Config holds the runtime configuration for quicbeam server or client.
 type Config struct {
-	Role       string        `json:"role"`        // "server" or "client"
-	ListenAddr string        `json:"listen_addr"` // e.g. ":443"
-	RemoteAddr string        `json:"remote_addr"` // peer address for client mode
-	ServerName string        `json:"server_name"` // TLS SNI
-	ALPN       string        `json:"alpn"`        // default "h3"
-	CertFile   string        `json:"cert_file"`
-	KeyFile    string        `json:"key_file"`
-	PSK        string        `json:"psk"`
-	Forwards   []PortForward `json:"forwards"`
+	Role               string        `json:"role"`                 // "server" or "client"
+	ListenAddr         string        `json:"listen_addr"`          // e.g. ":443" (server mode)
+	RemoteAddr         string        `json:"remote_addr"`          // peer address (client mode)
+	ServerName         string        `json:"server_name"`          // TLS SNI, default "www.cloudflare.com"
+	ALPN               string        `json:"alpn"`                 // default "h3"
+	CertFile           string        `json:"cert_file"`            // optional PEM cert (server mode)
+	KeyFile            string        `json:"key_file"`             // optional PEM key (server mode)
+	InsecureSkipVerify bool          `json:"insecure_skip_verify"` // skip TLS cert check (client mode, for self-signed)
+	PSK                string        `json:"psk"`                  // pre-shared key for session authentication
+	Forwards           []PortForward `json:"forwards"`             // local ports to listen and forward to peer
+}
+
+// Load reads, parses, and validates a JSON configuration file.
+func Load(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config %s: %w", path, err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("validate config %s: %w", path, err)
+	}
+	return &cfg, nil
+}
+
+// Validate checks required fields and applies safe defaults.
+func (c *Config) Validate() error {
+	c.Role = strings.ToLower(strings.TrimSpace(c.Role))
+	if c.Role != "" && c.Role != RoleServer && c.Role != RoleClient {
+		return fmt.Errorf("invalid role %q (must be %q or %q)", c.Role, RoleServer, RoleClient)
+	}
+	if c.ALPN == "" {
+		c.ALPN = "h3"
+	}
+	if c.ServerName == "" {
+		c.ServerName = "www.cloudflare.com"
+	}
+	if c.Role == RoleServer && c.ListenAddr == "" {
+		c.ListenAddr = ":443"
+	}
+	if c.Role == RoleClient && c.RemoteAddr == "" {
+		return fmt.Errorf("remote_addr is required in client mode")
+	}
+	if (c.CertFile != "" && c.KeyFile == "") || (c.CertFile == "" && c.KeyFile != "") {
+		return fmt.Errorf("cert_file and key_file must be specified together")
+	}
+	if strings.TrimSpace(c.PSK) == "" {
+		return fmt.Errorf("psk must not be empty")
+	}
+
+	udpCount := 0
+	for i := range c.Forwards {
+		f := &c.Forwards[i]
+		f.Proto = strings.ToLower(strings.TrimSpace(f.Proto))
+		if f.Proto != ProtoTCP && f.Proto != ProtoUDP {
+			return fmt.Errorf("forwards[%d] (%s): invalid proto %q (must be tcp or udp)", i, f.Name, f.Proto)
+		}
+		if _, _, err := net.SplitHostPort(f.Listen); err != nil {
+			return fmt.Errorf("forwards[%d] (%s): invalid listen addr %q: %w", i, f.Name, f.Listen, err)
+		}
+		if _, _, err := net.SplitHostPort(f.Target); err != nil {
+			return fmt.Errorf("forwards[%d] (%s): invalid target addr %q: %w", i, f.Name, f.Target, err)
+		}
+		if f.Name == "" {
+			f.Name = fmt.Sprintf("%s-%s", f.Proto, f.Listen)
+		}
+		if f.Proto == ProtoUDP {
+			udpCount++
+		}
+	}
+	if udpCount > 255 {
+		return fmt.Errorf("too many UDP forwards (%d): maximum supported is 255", udpCount)
+	}
+	return nil
 }

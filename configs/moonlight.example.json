@@ -1,0 +1,63 @@
+{
+  "role": "server",
+  "listen_addr": ":443",
+  "server_name": "www.cloudflare.com",
+  "alpn": "h3",
+  "psk": "CHANGE_ME_STRONG_RANDOM_PSK",
+  "forwards": [
+    {
+      "name": "ssh",
+      "proto": "tcp",
+      "listen": "127.0.0.1:2222",
+      "target": "127.0.0.1:22"
+    },
+    {
+      "name": "sunshine-https",
+      "proto": "tcp",
+      "listen": "127.0.0.1:47984",
+      "target": "127.0.0.1:47984"
+    },
+    {
+      "name": "sunshine-http",
+      "proto": "tcp",
+      "listen": "127.0.0.1:47989",
+      "target": "127.0.0.1:47989"
+    },
+    {
+      "name": "sunshine-rtsp-tcp",
+      "proto": "tcp",
+      "listen": "127.0.0.1:48010",
+      "target": "127.0.0.1:48010"
+    },
+    {
+      "name": "sunshine-video-udp",
+      "proto": "udp",
+      "listen": "127.0.0.1:47998",
+      "target": "127.0.0.1:47998"
+    },
+    {
+      "name": "sunshine-control-udp",
+      "proto": "udp",
+      "listen": "127.0.0.1:47999",
+      "target": "127.0.0.1:47999"
+    },
+    {
+      "name": "sunshine-audio-udp",
+      "proto": "udp",
+      "listen": "127.0.0.1:48000",
+      "target": "127.0.0.1:48000"
+    },
+    {
+      "name": "sunshine-mic-udp",
+      "proto": "udp",
+      "listen": "127.0.0.1:48002",
+      "target": "127.0.0.1:48002"
+    },
+    {
+      "name": "sunshine-rtsp-udp",
+      "proto": "udp",
+      "listen": "127.0.0.1:48010",
+      "target": "127.0.0.1:48010"
+    }
+  ]
+}
