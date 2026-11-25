@@ -3,14 +3,18 @@
   "listen_addr": ":443",
   "server_name": "www.cloudflare.com",
   "alpn": "h3",
+  "cert_file": "",
+  "key_file": "",
   "psk": "CHANGE_ME_STRONG_RANDOM_PSK",
+  "allowed_targets": ["127.0.0.1"],
   "port_hop_interval_sec": 0,
   "signal": {
     "url": "",
     "room": "home-desktop",
     "token": "",
     "publish_interval_sec": 60,
-    "prefer_ipv6": false
+    "prefer_ipv6": false,
+    "hole_punch": false
   },
   "forwards": [
     {
@@ -30,6 +34,12 @@
       "proto": "tcp",
       "listen": "127.0.0.1:47989",
       "target": "127.0.0.1:47989"
+    },
+    {
+      "name": "sunshine-web-ui",
+      "proto": "tcp",
+      "listen": "127.0.0.1:47990",
+      "target": "127.0.0.1:47990"
     },
     {
       "name": "sunshine-rtsp-tcp",

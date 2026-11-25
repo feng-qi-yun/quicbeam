@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 	"github.com/feng-qi-yun/quicbeam/internal/transport"
 )
 
-const version = "0.2.0-dev"
+const version = "0.3.0-dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -44,6 +45,11 @@ func main() {
 	case "stun":
 		if err := runStunCmd(os.Args[2:]); err != nil {
 			slog.Error("stun failed", "err", err)
+			os.Exit(1)
+		}
+	case "keygen":
+		if err := runKeygenCmd(os.Args[2:]); err != nil {
+			slog.Error("keygen failed", "err", err)
 			os.Exit(1)
 		}
 	case "version", "-v", "--version":
@@ -183,6 +189,36 @@ func runStunCmd(args []string) error {
 	return nil
 }
 
+func runKeygenCmd(args []string) error {
+	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
+	outDir := fs.String("out-dir", ".", "output directory for server.crt and server.key")
+	sni := fs.String("sni", transport.DefaultServerName, "certificate CommonName / DNS SAN")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(*outDir, 0o755); err != nil {
+		return fmt.Errorf("create output directory: %w", err)
+	}
+	certPath := filepath.Join(*outDir, "server.crt")
+	keyPath := filepath.Join(*outDir, "server.key")
+
+	pin, err := transport.GenerateCertFiles(certPath, keyPath, *sni)
+	if err != nil {
+		return err
+	}
+	psk, err := transport.GenerateRandomPSK()
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Cert file   : %s\n", certPath)
+	fmt.Printf("Key file    : %s (mode 0600)\n", keyPath)
+	fmt.Printf("cert_sha256 : %s\n", pin)
+	fmt.Printf("psk         : %s\n", psk)
+	return nil
+}
+
 func printUsage() {
 	fmt.Println(`quicbeam - Anti-DPI QUIC (UDP 443 / RFC 9221 Datagram) P2P tunnel for low-latency streaming
 
@@ -190,9 +226,10 @@ Usage:
   quicbeam <command> [flags]
 
 Commands:
-  server    Run tunnel server (listen UDP 443 + optional STUN/signal publish)
-  client    Run tunnel client (dial peer + optional signal discovery & port hopping)
+  server    Run tunnel server (listen UDP 443 + optional STUN/signal/hole-punch)
+  client    Run tunnel client (dial peer + optional signal/hole-punch/port-hopping)
   probe     Benchmark sustained UDP 443 QUIC Datagram / Stream throughput
   stun      Discover public IPv4 (STUN) and global IPv6 addresses
+  keygen    Generate self-signed TLS 1.3 cert/key, SHA-256 pin, and random PSK
   version   Print version information`)
 }

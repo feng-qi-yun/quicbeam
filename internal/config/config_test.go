@@ -118,3 +118,33 @@ func TestConfigSignalDefaults(t *testing.T) {
 		t.Fatalf("expected default STUN servers")
 	}
 }
+
+func TestIsTargetAllowed(t *testing.T) {
+	// Default (empty): loopback only.
+	if !IsTargetAllowed("127.0.0.1:47984", nil) {
+		t.Fatal("expected 127.0.0.1 allowed by default")
+	}
+	if !IsTargetAllowed("[::1]:22", nil) {
+		t.Fatal("expected ::1 allowed by default")
+	}
+	if !IsTargetAllowed("localhost:22", nil) {
+		t.Fatal("expected localhost allowed by default")
+	}
+	if IsTargetAllowed("192.168.1.3:22", nil) {
+		t.Fatal("expected LAN IP blocked by default")
+	}
+
+	// Custom CIDR whitelist.
+	rules := []string{"127.0.0.1", "192.168.1.0/24"}
+	if !IsTargetAllowed("192.168.1.3:47998", rules) {
+		t.Fatal("expected 192.168.1.3 allowed by CIDR")
+	}
+	if IsTargetAllowed("10.0.0.1:22", rules) {
+		t.Fatal("expected 10.0.0.1 blocked by CIDR")
+	}
+
+	// Wildcard.
+	if !IsTargetAllowed("10.0.0.1:22", []string{"*"}) {
+		t.Fatal("expected wildcard to allow all")
+	}
+}

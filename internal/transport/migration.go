@@ -27,7 +27,7 @@ type PortHopper struct {
 
 	mu        sync.Mutex
 	currentTr *quic.Transport
-	currentPC *net.UDPConn
+	currentPC net.PacketConn
 	closed    bool
 }
 
@@ -39,7 +39,7 @@ func NewPortHopper(dc *DialedConn, interval time.Duration) *PortHopper {
 		remoteAddr: dc.Conn.RemoteAddr().String(),
 		interval:   interval,
 		currentTr:  dc.Transport,
-		currentPC:  dc.UDPConn,
+		currentPC:  dc.PacketConn,
 	}
 }
 
@@ -139,7 +139,7 @@ func (h *PortHopper) HopOnce(ctx context.Context) error {
 
 	// Drain in-flight packets on the previous path briefly before closing it.
 	if prevTr != nil || prevPC != nil {
-		go func(oldTr *quic.Transport, oldPC *net.UDPConn) {
+		go func(oldTr *quic.Transport, oldPC net.PacketConn) {
 			time.Sleep(oldPathDrainDelay)
 			if oldTr != nil {
 				_ = oldTr.Close()

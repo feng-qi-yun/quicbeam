@@ -58,29 +58,38 @@ type udpEgress struct {
 // Session represents a single authenticated QUIC connection carrying multiplexed
 // TCP Streams and RFC 9221 Unreliable UDP Datagrams.
 type Session struct {
-	conn         *quic.Conn
-	ctx          context.Context
-	cancel       context.CancelFunc
-	egress       map[uint8]*udpEgress
-	ingress      map[uint8]*udpIngress
-	reassembler  *datagramReassembler
-	maxDgramSize atomic.Int64
-	fragMsgID    atomic.Uint32
-	lastMTUWarns atomic.Int64
-	closeOnce    sync.Once
-	wg           sync.WaitGroup
+	conn           *quic.Conn
+	ctx            context.Context
+	cancel         context.CancelFunc
+	egress         map[uint8]*udpEgress
+	ingress        map[uint8]*udpIngress
+	allowedTargets []string
+	reassembler    *datagramReassembler
+	maxDgramSize   atomic.Int64
+	fragMsgID      atomic.Uint32
+	lastMTUWarns   atomic.Int64
+	tcpTotal       atomic.Uint64
+	tcpActive      atomic.Int64
+	udpTxPkts      atomic.Uint64
+	udpRxPkts      atomic.Uint64
+	udpTxBytes     atomic.Uint64
+	udpRxBytes     atomic.Uint64
+	udpFragPkts    atomic.Uint64
+	closeOnce      sync.Once
+	wg             sync.WaitGroup
 }
 
 // Manager owns long-lived local TCP/UDP listeners and routes them through the
 // currently active QUIC Session, surviving disconnects and reconnects without
 // rebinding local ports.
 type Manager struct {
-	role        string
-	forwards    []config.PortForward
-	udpSpecs    []UDPChannelSpec
-	udpIngress  map[uint8]*udpIngress
-	tcpListens  []net.Listener
-	listenAddrs map[string]string
+	role           string
+	forwards       []config.PortForward
+	allowedTargets []string
+	udpSpecs       []UDPChannelSpec
+	udpIngress     map[uint8]*udpIngress
+	tcpListens     []net.Listener
+	listenAddrs    map[string]string
 
 	mu      sync.RWMutex
 	session *Session
@@ -161,6 +170,13 @@ func NewManager(parentCtx context.Context, role string, forwards []config.PortFo
 	return m, nil
 }
 
+// SetAllowedTargets configures the egress target whitelist (empty = loopback only).
+func (m *Manager) SetAllowedTargets(rules []string) {
+	m.mu.Lock()
+	m.allowedTargets = append([]string(nil), rules...)
+	m.mu.Unlock()
+}
+
 // ListenAddr returns the bound local address for a named forward rule.
 func (m *Manager) ListenAddr(name string) string {
 	return m.listenAddrs[name]
@@ -202,17 +218,26 @@ func (m *Manager) activeSession() *Session {
 // AttachSession activates a newly authenticated QUIC connection, replacing any
 // stale previous session, and blocks until this session ends.
 func (m *Manager) AttachSession(conn *quic.Conn, peerUDPChannels []UDPChannelSpec) error {
+	m.mu.RLock()
+	allowed := append([]string(nil), m.allowedTargets...)
+	m.mu.RUnlock()
+
 	sCtx, sCancel := context.WithCancel(m.ctx)
 	sess := &Session{
-		conn:        conn,
-		ctx:         sCtx,
-		cancel:      sCancel,
-		egress:      make(map[uint8]*udpEgress, len(peerUDPChannels)),
-		ingress:     m.udpIngress,
-		reassembler: newDatagramReassembler(),
+		conn:           conn,
+		ctx:            sCtx,
+		cancel:         sCancel,
+		egress:         make(map[uint8]*udpEgress, len(peerUDPChannels)),
+		ingress:        m.udpIngress,
+		allowedTargets: allowed,
+		reassembler:    newDatagramReassembler(),
 	}
 
 	for _, ch := range peerUDPChannels {
+		if !config.IsTargetAllowed(ch.Target, allowed) {
+			slog.Warn("blocked disallowed UDP egress target", "channel_id", ch.ID, "name", ch.Name, "target", ch.Target)
+			continue
+		}
 		raddr, err := net.ResolveUDPAddr("udp", ch.Target)
 		if err != nil {
 			sess.Close(errCodeNormalClose, "resolve udp target failed")
@@ -245,7 +270,11 @@ func (m *Manager) AttachSession(conn *quic.Conn, peerUDPChannels []UDPChannelSpe
 	}
 
 	errCh := make(chan error, 2)
-	sess.wg.Add(2)
+	sess.wg.Add(3)
+	go func() {
+		defer sess.wg.Done()
+		sess.statsLoop()
+	}()
 	go func() {
 		defer sess.wg.Done()
 		errCh <- sess.acceptTCPStreams()
@@ -427,6 +456,8 @@ func (s *Session) sendDatagram(pkt []byte, name string) {
 
 	err := s.conn.SendDatagram(pkt)
 	if err == nil {
+		s.udpTxPkts.Add(1)
+		s.udpTxBytes.Add(uint64(len(pkt) - 1))
 		return
 	}
 	var tooLarge *quic.DatagramTooLargeError
@@ -470,6 +501,9 @@ func (s *Session) sendFragmented(channelID uint8, payload []byte, maxSize int, n
 			return
 		}
 	}
+	s.udpTxPkts.Add(1)
+	s.udpTxBytes.Add(uint64(len(payload)))
+	s.udpFragPkts.Add(1)
 }
 
 func (s *Session) acceptTCPStreams() error {
@@ -489,6 +523,11 @@ func (s *Session) handleRemoteTCPStream(stream *quic.Stream) {
 		slog.Warn("read TCP stream header error", "err", err)
 		return
 	}
+	if !config.IsTargetAllowed(target, s.allowedTargets) {
+		slog.Warn("blocked disallowed TCP target", "target", target)
+		_ = writeStreamStatus(stream, false)
+		return
+	}
 
 	targetConn, err := net.DialTimeout("tcp", target, tcpDialTimeout)
 	if err != nil {
@@ -501,6 +540,10 @@ func (s *Session) handleRemoteTCPStream(stream *quic.Stream) {
 	if err := writeStreamStatus(stream, true); err != nil {
 		return
 	}
+
+	s.tcpTotal.Add(1)
+	s.tcpActive.Add(1)
+	defer s.tcpActive.Add(-1)
 
 	pipeBidirectional(targetConn, stream)
 }
@@ -529,6 +572,9 @@ func (s *Session) recvDatagrams() error {
 			payload = pkt[1:]
 		}
 
+		s.udpRxPkts.Add(1)
+		s.udpRxBytes.Add(uint64(len(payload)))
+
 		if ing, ok := s.ingress[id]; ok {
 			if client := ing.getClient(); client != nil {
 				_, _ = ing.conn.WriteToUDP(payload, client)
@@ -538,6 +584,38 @@ func (s *Session) recvDatagrams() error {
 		if eg, ok := s.egress[id]; ok {
 			_, _ = eg.conn.Write(payload)
 			continue
+		}
+	}
+}
+
+func (s *Session) statsLoop() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	var prevTxBytes, prevRxBytes uint64
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			txB := s.udpTxBytes.Load()
+			rxB := s.udpRxBytes.Load()
+			tcpAct := s.tcpActive.Load()
+			if txB == prevTxBytes && rxB == prevRxBytes && tcpAct == 0 {
+				continue
+			}
+			txMbps := float64((txB-prevTxBytes)*8) / (60.0 * 1e6)
+			rxMbps := float64((rxB-prevRxBytes)*8) / (60.0 * 1e6)
+			prevTxBytes, prevRxBytes = txB, rxB
+			slog.Info("tunnel stats (60s)",
+				"tcp_active", tcpAct,
+				"tcp_total", s.tcpTotal.Load(),
+				"udp_tx_mbps", fmt.Sprintf("%.2f", txMbps),
+				"udp_rx_mbps", fmt.Sprintf("%.2f", rxMbps),
+				"udp_tx_pkts", s.udpTxPkts.Load(),
+				"udp_rx_pkts", s.udpRxPkts.Load(),
+				"udp_frag_pkts", s.udpFragPkts.Load(),
+			)
 		}
 	}
 }

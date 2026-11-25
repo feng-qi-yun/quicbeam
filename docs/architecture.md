@@ -32,33 +32,33 @@
 └──────────────────────────────────────────────────────────┘
 ```
 
-### L4：业务接入层（MVP：端口转发）
-- **TCP 映射**（走 QUIC Stream，可靠有序）：
+### L4：业务接入层（轻量级端口转发，不做 TUN 虚拟网卡）
+- 项目刻意不引入 TUN 虚拟网卡与内核驱动，保持单文件免 Root 跨平台（Linux / Windows / Android Termux）极简形态，专注替代 Tailscale 在 Moonlight/Sunshine 与 SSH 中的作用。
+- **TCP 映射**（走 QUIC Stream，可靠有序，支持出口目标白名单 `allowed_targets`）：
   - SSH (`22`)
-  - Sunshine 控制信令 (`47984`, `47989`, `48010`)
+  - Sunshine 控制信令 (`47984`, `47989`, `47990`, `48010`)
 - **UDP 映射**（走 QUIC Unreliable Datagram RFC 9221，不可靠、零队头阻塞）：
   - Sunshine 视频/音频/输入流 (`47998` ~ `48010`)
 - **协议封装格式（Datagram）**：
-  - `[1 byte channel_id][N bytes raw UDP payload]`，极简 1 字节多路复用头，最小化 MTU 损耗。
+  - 常规包：`[1 byte channel_id][N bytes raw UDP payload]`，极简 1 字节多路复用头；
+  - 超长包（如 Moonlight LAN 默认 1408B 超过路径 `MaxDatagramSize`）：自动切换 `0xFF` 逃逸头执行不可靠分片与无阻塞重组。
 
 ### L3：抗 DPI 传输层
 - **首选传输**：`quic-go` + TLS 1.3 + ALPN `h3` + `EnableDatagrams: true`。
-- **认证机制**：双向 TLS（mTLS）或连接建立后的首条 Control Stream PSK 鉴权，非法探测连接直接伪装返回普通 HTTP/3 404 或静默关闭。
-- **备选兜底**：若实测发现 `UDP 443` 同样遭遇限速，保留 `internal/transport` 接口抽象，可扩展支持 TLS-over-TCP 443（用于控制流/运维）或 FakeTCP。
+- **认证与防 MITM**：支持 `cert_sha256` 证书指纹钉扎（`quicbeam keygen` 一键生成自签证书、指纹与随机 PSK）+ 首条 Control Stream 常量时间 PSK 鉴权，非法探测连接直接拒绝关闭。
 
 ### L2：Port Hopping（连接迁移）
-- 依托 QUIC 原生 Connection Migration（通过 Connection ID 而非四元组标识会话），在检测到丢包飙升或定时窗口到达时平滑迁移客户端源端口（Make-Before-Break），保证串流不中断。
+- 依托 QUIC 原生 Connection Migration（`AddPath` → `Probe` → `Switch`），在定时窗口到达时 Make-Before-Break 平滑迁移客户端源端口，保证串流不中断。
 
-### L1：NAT 穿透与极简信令
-- 双端均为 Cone NAT / 公网 IP，无需重型中控：
-  - 启动时通过 STUN 采集公网 IPv4:Port 及原生 IPv6；
-  - 通过极简信令接口（如 Cloudflare Workers KV）交换加密后的端点信息并并发打洞。
+### L1：双端 NAT 打洞与极简加密信令
+- 基于 RFC 7983 首字节复用（`DemuxPacketConn`），同一 UDP Socket 并发承接 STUN 探测、打洞包与 QUIC 握手：
+  - 启动及运行期间通过纯 Go RFC 5389 STUN 采集公网 IPv4:Port 及原生全局 IPv6；
+  - 通过 `SHA-256(PSK)` + AES-256-GCM 加密端点信息后经极简 HTTP/KV 信令（如 Cloudflare Workers KV）交换，并触发双向 UDP 并发打洞。
 
 ---
 
 ## 三、开发阶段规划
 
-1. **Phase 0：`quicbeam probe`** — 实测台式机 ↔ 笔记本在 `UDP 443` QUIC Datagram 下的 10 秒持续上行吞吐，确认是否享受 443 白名单满速。
-2. **Phase 1：MVP 直连隧道** — `quicbeam server` / `quicbeam client` 点对点连接，跑通 SSH + Moonlight 1080p60 串流。
-3. **Phase 2：自动打洞 + Port Hopping** — 接入 STUN 与极简信令，支持动态 IP 自动重连与无感换端口。
-4. **Phase 3：TUN 虚拟网卡（可选）** — 集成 `wintun` / `/dev/net/tun` 实现透明三层组网。
+1. **Phase 0：`quicbeam probe`（已完成）** — 实测台式机 ↔ 笔记本 `UDP 443` QUIC Stream 93.4 Mbps、Datagram 60 Mbps 0.00% 丢包。
+2. **Phase 1：MVP 对称直连隧道（已完成）** — `quicbeam server` / `client` 跑通 SSH + Moonlight 串流与 1408B 不可靠分片。
+3. **Phase 2：双端 NAT 打洞 + 加密信令 + Port Hopping + 安全加固（已完成）** — STUN/IPv6 发现、AES-256-GCM 信令、同 Socket 双向打洞、Make-Before-Break 跳端口、`cert_sha256` 钉扎与 `allowed_targets` 白名单。

@@ -66,17 +66,77 @@ func Dial(ctx context.Context, addr string, tlsCfg *tls.Config, quicCfg *quic.Co
 }
 
 // DialedConn bundles an established client QUIC connection with its underlying
-// Transport and UDP socket so callers can perform Connection Migration (Port Hopping)
+// Transport and PacketConn so callers can perform Connection Migration (Port Hopping)
 // and clean up all sockets on teardown.
 type DialedConn struct {
-	Conn      *quic.Conn
-	Transport *quic.Transport
-	UDPConn   *net.UDPConn
-	Network   string // "udp4" or "udp6"
+	Conn       *quic.Conn
+	Transport  *quic.Transport
+	PacketConn net.PacketConn
+	Network    string // "udp4" or "udp6"
 }
 
-// DialWithTransport dials a QUIC server using an explicit *quic.Transport so the
-// connection supports Make-Before-Break Connection Migration via PortHopper.
+// ListenOnConn starts a QUIC listener on an existing net.PacketConn (e.g. a
+// STUN/hole-punch DemuxPacketConn). The returned *quic.Transport should be closed
+// when the listener is shut down.
+func ListenOnConn(pc net.PacketConn, tlsCfg *tls.Config, quicCfg *quic.Config) (*quic.Listener, *quic.Transport, error) {
+	if quicCfg == nil {
+		quicCfg = DefaultQUICConfig()
+	}
+	tr := &quic.Transport{Conn: pc}
+	ln, err := tr.Listen(tlsCfg, quicCfg)
+	if err != nil {
+		_ = tr.Close()
+		return nil, nil, fmt.Errorf("quic listen on %s: %w", pc.LocalAddr().String(), err)
+	}
+	slog.Info("quic listener started",
+		"listen_addr", ln.Addr().String(),
+		"alpn", tlsCfg.NextProtos,
+		"datagrams", quicCfg.EnableDatagrams,
+	)
+	return ln, tr, nil
+}
+
+// DialOnConn dials a QUIC server using an existing net.PacketConn (e.g. after
+// STUN probing and UDP hole punching on that exact socket).
+func DialOnConn(ctx context.Context, pc net.PacketConn, addr string, tlsCfg *tls.Config, quicCfg *quic.Config) (*DialedConn, error) {
+	if quicCfg == nil {
+		quicCfg = DefaultQUICConfig()
+	}
+	raddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("resolve udp %s: %w", addr, err)
+	}
+	network := "udp4"
+	if raddr.IP != nil && raddr.IP.To4() == nil {
+		network = "udp6"
+	}
+
+	tr := &quic.Transport{Conn: pc}
+	start := time.Now()
+	conn, err := tr.Dial(ctx, raddr, tlsCfg, quicCfg)
+	if err != nil {
+		_ = tr.Close()
+		return nil, fmt.Errorf("quic dial %s: %w", addr, err)
+	}
+
+	state := conn.ConnectionState()
+	slog.Info("quic connected",
+		"remote_addr", conn.RemoteAddr().String(),
+		"local_addr", pc.LocalAddr().String(),
+		"handshake_ms", time.Since(start).Milliseconds(),
+		"alpn", state.TLS.NegotiatedProtocol,
+		"remote_datagrams", state.SupportsDatagrams.Remote,
+	)
+	return &DialedConn{
+		Conn:       conn,
+		Transport:  tr,
+		PacketConn: pc,
+		Network:    network,
+	}, nil
+}
+
+// DialWithTransport dials a QUIC server using a fresh UDP socket and explicit *quic.Transport
+// so the connection supports Make-Before-Break Connection Migration via PortHopper.
 func DialWithTransport(ctx context.Context, addr string, tlsCfg *tls.Config, quicCfg *quic.Config) (*DialedConn, error) {
 	if quicCfg == nil {
 		quicCfg = DefaultQUICConfig()
@@ -94,28 +154,11 @@ func DialWithTransport(ctx context.Context, addr string, tlsCfg *tls.Config, qui
 	if err != nil {
 		return nil, fmt.Errorf("listen local %s: %w", network, err)
 	}
-	tr := &quic.Transport{Conn: pc}
 
-	start := time.Now()
-	conn, err := tr.Dial(ctx, raddr, tlsCfg, quicCfg)
+	dc, err := DialOnConn(ctx, pc, addr, tlsCfg, quicCfg)
 	if err != nil {
-		_ = tr.Close()
 		_ = pc.Close()
-		return nil, fmt.Errorf("quic dial %s: %w", addr, err)
+		return nil, err
 	}
-
-	state := conn.ConnectionState()
-	slog.Info("quic connected",
-		"remote_addr", conn.RemoteAddr().String(),
-		"local_addr", pc.LocalAddr().String(),
-		"handshake_ms", time.Since(start).Milliseconds(),
-		"alpn", state.TLS.NegotiatedProtocol,
-		"remote_datagrams", state.SupportsDatagrams.Remote,
-	)
-	return &DialedConn{
-		Conn:      conn,
-		Transport: tr,
-		UDPConn:   pc,
-		Network:   network,
-	}, nil
+	return dc, nil
 }
