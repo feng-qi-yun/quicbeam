@@ -95,14 +95,34 @@ func TestPortHopperMakeBeforeBreak(t *testing.T) {
 	beforeAddr := hopper.LocalAddr().String()
 	verifyTraffic("before-hop")
 
-	if err := hopper.HopOnce(ctx); err != nil {
-		t.Fatalf("HopOnce failed: %v", err)
-	}
-	afterAddr := hopper.LocalAddr().String()
-	if beforeAddr == afterAddr {
-		t.Fatalf("expected local address to change after port hop, still %s", afterAddr)
-	}
-	t.Logf("migrated local port: %s -> %s", beforeAddr, afterAddr)
+	// Use a short drainDelay and small pool to exercise post-drain survival,
+	// CID retirement across many hops, and FIFO transport pool reuse.
+	hopper.drainDelay = 50 * time.Millisecond
+	hopper.maxPoolSize = 3
 
-	verifyTraffic("after-hop")
+	seenAddrs := map[string]bool{beforeAddr: true}
+	prevAddr := beforeAddr
+	for i := 1; i <= 6; i++ {
+		if err := hopper.HopOnce(ctx); err != nil {
+			t.Fatalf("HopOnce #%d failed: %v", i, err)
+		}
+		afterAddr := hopper.LocalAddr().String()
+		if afterAddr == prevAddr {
+			t.Fatalf("hop #%d: expected local address to change, still %s", i, afterAddr)
+		}
+		seenAddrs[afterAddr] = true
+		prevAddr = afterAddr
+
+		// Wait past drainDelay to ensure retiring the previous path never tears down the QUIC connection.
+		time.Sleep(hopper.drainDelay + 30*time.Millisecond)
+		if err := dc.Conn.Context().Err(); err != nil {
+			t.Fatalf("hop #%d: connection died after drain delay: %v", i, err)
+		}
+		verifyTraffic("after-hop")
+	}
+
+	if len(seenAddrs) != hopper.maxPoolSize {
+		t.Fatalf("expected bounded pool of %d unique local addresses, got %d (%v)", hopper.maxPoolSize, len(seenAddrs), seenAddrs)
+	}
+	t.Logf("completed 6 consecutive hops across %d bounded local ports without connection drop", len(seenAddrs))
 }
