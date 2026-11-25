@@ -13,9 +13,9 @@
 - **双通道严格分离（零队头阻塞）**：
   - Moonlight 音视频/控制 UDP 流 → **QUIC Unreliable Datagram (RFC 9221)**，内置超长包（如 1408B LAN 视频帧）无阻塞不可靠分片重组。
   - SSH / Sunshine 控制信令 TCP 流 → **QUIC Stream**，可靠有序，支持出口目标白名单（默认仅放行本机回环）。
-- **双端 Cone NAT 打洞 & 无感跳端口（Port Hopping）**：
+- **双端 Cone NAT 打洞 & 可选无感跳端口（Port Hopping）**：
   - 基于 RFC 7983 首字节复用，在**同一 UDP Socket** 上并发完成 STUN 探测、AES-256-GCM 密文信令交换、双向 UDP 打洞与 QUIC 握手；
-  - 依托 QUIC 原生 Connection Migration（Make-Before-Break），实现串流不断线的定时换源端口。
+  - 支持依托 QUIC 原生 Connection Migration（Make-Before-Break）的定时换源端口（默认关闭 `port_hop_interval_sec: 0`）。
 - **单文件跨平台（Linux / Windows / Android Termux）**：纯 Go（`CGO_ENABLED=0`），零外部驱动，免 Root。
 
 ---
@@ -61,12 +61,14 @@ make test           # 全量单元测试（含 -race 竞争检测）
 # 服务端（监听 UDP 443，可选开启 STUN + 加密信令发布与打洞）
 ./bin/quicbeam server -config server.json
 
-# 客户端（拨号对端，支持 cert_sha256 钉扎、动态信令发现、NAT 打洞与定时 Port Hopping）
+# 客户端（拨号对端，支持 cert_sha256 钉扎、动态信令发现、NAT 打洞与可选 Port Hopping）
 ./bin/quicbeam client -config client.json
 ```
 
 打开 **Moonlight**（Linux / Windows / Android）手动添加主机 **`127.0.0.1`**，即可经 `UDP 443` QUIC Datagram 串流。
 
+> **关于 `port_hop_interval_sec` 的重要避坑说明**：默认值为 `0`（关闭），**在按四元组识别 TLS ClientHello 放行 443 白名单的国内家宽线路（如江苏电信）上请保持关闭**。实测 QUIC 原生 Connection Migration（`path.Switch()`）切换到新源端口后不再发送 QUIC Initial / TLS 1.3 ClientHello，仅发 1-RTT 短头密文，会导致新四元组被运营商 QoS 识别为未知 UDP 并锁死在 **~2 Mbps**（而保持完整 `h3` 握手的原四元组可稳跑 **86+ Mbps**）。
+>
 > 如需动态 IP 自动追踪与双端 NAT 打洞，可将 [deploy/cf-worker-signal.js](./deploy/cf-worker-signal.js) 部署到 Cloudflare Workers（绑定 KV 命名空间 `QUICBEAM_KV`），信令端仅存储由 `PSK` 派生的 AES-256-GCM 密文。
 
 ---

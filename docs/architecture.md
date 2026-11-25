@@ -47,8 +47,9 @@
 - **首选传输**：`quic-go` + TLS 1.3 + ALPN `h3` + `EnableDatagrams: true`。
 - **认证与防 MITM**：支持 `cert_sha256` 证书指纹钉扎（`quicbeam keygen` 一键生成自签证书、指纹与随机 PSK）+ 首条 Control Stream 常量时间 PSK 鉴权，非法探测连接直接拒绝关闭。
 
-### L2：Port Hopping（连接迁移）
-- 依托 QUIC 原生 Connection Migration（`AddPath` → `Probe` → `Switch`），在定时窗口到达时 Make-Before-Break 平滑迁移客户端源端口，保证串流不中断。
+### L2：Port Hopping（连接迁移，默认关闭）
+- 依托 QUIC 原生 Connection Migration（`AddPath` → `Probe` → `Switch`），在定时窗口到达时 Make-Before-Break 平滑迁移客户端源端口，通过有界 FIFO Transport 池（默认 32）避免关闭旧 `quic.Transport` 误杀连接。
+- **实测 DPI/QoS 约束（2026-11-25 江苏电信）**：QUIC 原生连接迁移切换到新源端口后，新四元组上不再发送 QUIC Initial / TLS 1.3 ClientHello（仅发 1-RTT 短头包），会被按四元组识别 `h3` 握手的运营商 QoS 视为未知加密 UDP 并限速至 **~2.05 Mbps**（实测同一连接迁移前满速 **86.4 Mbps**、Moonlight 23 Mbps 零丢包，迁移瞬间即刻掉至 ~1 Mbps 且丢包率 >85%）。因此默认保持 `port_hop_interval_sec: 0`（关闭），仅在无此类四元组握手白名单限制的线路上按需开启。
 
 ### L1：双端 NAT 打洞与极简加密信令
 - 基于 RFC 7983 首字节复用（`DemuxPacketConn`），同一 UDP Socket 并发承接 STUN 探测、打洞包与 QUIC 握手：

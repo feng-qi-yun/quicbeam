@@ -55,7 +55,7 @@ type Config struct {
 	CertSHA256         string        `json:"cert_sha256,omitempty"`           // pinned server cert SHA-256 hex (client mode, replaces insecure_skip_verify)
 	InsecureSkipVerify bool          `json:"insecure_skip_verify"`            // skip TLS cert check (dev only; prefer cert_sha256)
 	PSK                string        `json:"psk"`                             // pre-shared key for session auth & signal encryption
-	PortHopIntervalSec int           `json:"port_hop_interval_sec,omitempty"` // client Make-Before-Break port hopping interval (0 = disabled)
+	PortHopIntervalSec int           `json:"port_hop_interval_sec,omitempty"` // client QUIC Connection Migration interval (0 = disabled; keep 0 on ISPs that whitelist UDP 443 per-flow via TLS ClientHello)
 	AllowedTargets     []string      `json:"allowed_targets,omitempty"`       // egress target host/CIDR whitelist (empty = loopback only; "*" = allow all)
 	Signal             *SignalConfig `json:"signal,omitempty"`                // optional STUN + encrypted signaling config
 	Forwards           []PortForward `json:"forwards"`                        // local ports to listen and forward to peer

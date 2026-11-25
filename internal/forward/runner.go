@@ -212,6 +212,9 @@ func RunClient(ctx context.Context, cfg *config.Config) error {
 
 		hopCtx, cancelHop := context.WithCancel(ctx)
 		if cfg.PortHopIntervalSec > 0 {
+			slog.Warn("QUIC Connection Migration port hopping enabled; migrated 4-tuples do not send a fresh TLS ClientHello and may trigger ISP QoS throttling (set port_hop_interval_sec=0 if throughput drops)",
+				"port_hop_sec", cfg.PortHopIntervalSec,
+			)
 			go hopper.Run(hopCtx)
 		}
 
