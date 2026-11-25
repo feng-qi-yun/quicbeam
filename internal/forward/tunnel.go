@@ -63,6 +63,9 @@ type Session struct {
 	cancel       context.CancelFunc
 	egress       map[uint8]*udpEgress
 	ingress      map[uint8]*udpIngress
+	reassembler  *datagramReassembler
+	maxDgramSize atomic.Int64
+	fragMsgID    atomic.Uint32
 	lastMTUWarns atomic.Int64
 	closeOnce    sync.Once
 	wg           sync.WaitGroup
@@ -201,11 +204,12 @@ func (m *Manager) activeSession() *Session {
 func (m *Manager) AttachSession(conn *quic.Conn, peerUDPChannels []UDPChannelSpec) error {
 	sCtx, sCancel := context.WithCancel(m.ctx)
 	sess := &Session{
-		conn:    conn,
-		ctx:     sCtx,
-		cancel:  sCancel,
-		egress:  make(map[uint8]*udpEgress, len(peerUDPChannels)),
-		ingress: m.udpIngress,
+		conn:        conn,
+		ctx:         sCtx,
+		cancel:      sCancel,
+		egress:      make(map[uint8]*udpEgress, len(peerUDPChannels)),
+		ingress:     m.udpIngress,
+		reassembler: newDatagramReassembler(),
 	}
 
 	for _, ch := range peerUDPChannels {
@@ -413,25 +417,58 @@ func (s *Session) Close(code quic.ApplicationErrorCode, reason string) {
 }
 
 func (s *Session) sendDatagram(pkt []byte, name string) {
+	if len(pkt) < 2 {
+		return
+	}
+	if maxSize := int(s.maxDgramSize.Load()); maxSize > 0 && len(pkt) > maxSize {
+		s.sendFragmented(pkt[0], pkt[1:], maxSize, name)
+		return
+	}
+
 	err := s.conn.SendDatagram(pkt)
 	if err == nil {
 		return
 	}
 	var tooLarge *quic.DatagramTooLargeError
 	if errors.As(err, &tooLarge) {
+		maxSize := int(tooLarge.MaxDatagramPayloadSize)
+		s.maxDgramSize.Store(tooLarge.MaxDatagramPayloadSize)
 		now := time.Now().UnixNano()
 		prev := s.lastMTUWarns.Load()
 		if now-prev >= int64(mtuWarnCooldown) && s.lastMTUWarns.CompareAndSwap(prev, now) {
-			slog.Warn("QUIC datagram dropped: payload exceeds path MaxDatagramSize",
+			slog.Warn("UDP payload exceeds path MaxDatagramSize; enabling unreliable datagram fragmentation",
 				"forward", name,
 				"payload_bytes", len(pkt),
-				"max_datagram_size", tooLarge.MaxDatagramPayloadSize,
+				"max_datagram_size", maxSize,
 			)
 		}
+		s.sendFragmented(pkt[0], pkt[1:], maxSize, name)
 		return
 	}
 	if s.ctx.Err() == nil {
 		slog.Debug("send datagram error", "forward", name, "err", err)
+	}
+}
+
+func (s *Session) sendFragmented(channelID uint8, payload []byte, maxSize int, name string) {
+	msgID := uint16(s.fragMsgID.Add(1))
+	frags := buildFragments(channelID, msgID, payload, maxSize)
+	if len(frags) == 0 {
+		slog.Warn("UDP payload could not be fragmented",
+			"forward", name,
+			"payload_bytes", len(payload),
+			"max_datagram_size", maxSize,
+		)
+		return
+	}
+	for _, frag := range frags {
+		if err := s.conn.SendDatagram(frag); err != nil {
+			var tooLarge *quic.DatagramTooLargeError
+			if errors.As(err, &tooLarge) {
+				s.maxDgramSize.Store(tooLarge.MaxDatagramPayloadSize)
+			}
+			return
+		}
 	}
 }
 
@@ -477,8 +514,20 @@ func (s *Session) recvDatagrams() error {
 		if len(pkt) < 2 {
 			continue
 		}
-		id := pkt[0]
-		payload := pkt[1:]
+
+		var id uint8
+		var payload []byte
+		if pkt[0] == fragEscapeByte {
+			chID, full, ok := s.reassembler.push(pkt)
+			if !ok {
+				continue
+			}
+			id = chID
+			payload = full
+		} else {
+			id = pkt[0]
+			payload = pkt[1:]
+		}
 
 		if ing, ok := s.ingress[id]; ok {
 			if client := ing.getClient(); client != nil {

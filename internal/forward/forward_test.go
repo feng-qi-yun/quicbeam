@@ -227,7 +227,7 @@ func TestSymmetricForwardingTCPAndUDP(t *testing.T) {
 			defer uc.Close()
 			_ = uc.SetDeadline(time.Now().Add(3 * time.Second))
 
-			buf := make([]byte, 2048)
+			buf := make([]byte, 4096)
 			for i := range 50 {
 				payload := bytes.Repeat([]byte(fmt.Sprintf("dgram-%02d-", i)), 100) // 900B
 				if _, err := uc.Write(payload); err != nil {
@@ -239,6 +239,21 @@ func TestSymmetricForwardingTCPAndUDP(t *testing.T) {
 				}
 				if !bytes.Equal(buf[:n], payload) {
 					t.Fatalf("udp mismatch on packet %d", i)
+				}
+			}
+
+			// 3. Verify oversized 1408B Moonlight LAN video packets via unreliable fragmentation.
+			for i := range 20 {
+				payload := bytes.Repeat([]byte(fmt.Sprintf("vid-%02d--", i)), 176) // 1408B
+				if _, err := uc.Write(payload); err != nil {
+					t.Fatalf("oversized udp write %d: %v", i, err)
+				}
+				n, err := uc.Read(buf)
+				if err != nil {
+					t.Fatalf("oversized udp read %d: %v", i, err)
+				}
+				if !bytes.Equal(buf[:n], payload) {
+					t.Fatalf("oversized udp mismatch on packet %d", i)
 				}
 			}
 		})
