@@ -6,9 +6,9 @@
 
 在部分国内家宽环境下，传统的 WireGuard / Tailscale 方案面临双重封锁：
 1. **协议指纹动态黑洞**：运营商省网 DPI 识别标准 WireGuard 握手包（固定 148/92 字节与明文头）后，无论怎么更换高位端口，都会将对应 UDP 端口逐个拉黑（`udp=false`），迫使连接回退至高延迟海外中继。
-2. **非标端口上行限速（反 PCDN QoS）**：实测江苏电信家宽下，标准 **`443` 端口（TCP/UDP）** 持续上行可达 **80~93 Mbps**，而非标端口（如 `8080`、WireGuard UDP）被硬性压死在 **~1.9 Mbps**。
+2. **非标端口上行限速（反 PCDN QoS）**：实测标准 **`443` 端口（TCP/UDP）** 持续上行可达 **80~93 Mbps**，而非标端口（如 `8080`、WireGuard UDP）被硬性压死在 **~1.9 Mbps**。
 
-**QuicBeam** 的定位极其聚焦——**以最轻量的方式替代 Tailscale 在 Moonlight / Sunshine 与 SSH 中的作用**（刻意不引入虚拟网卡 TUN）：
+**QuicBeam** 的定位极其聚焦——**以最轻量的方式替代 Tailscale 在 Moonlight / Sunshine 与 SSH 中的作用**：
 - **标准 `443` 端口 + 真 TLS 1.3 / QUIC (ALPN `h3`) 外壳**：天然融入主流 HTTP/3 流量特征，支持 **TLS 证书 SHA-256 指纹钉扎（`cert_sha256`）** 与 **PSK 双向鉴权**。
 - **双通道严格分离（零队头阻塞）**：
   - Moonlight 音视频/控制 UDP 流 → **QUIC Unreliable Datagram (RFC 9221)**，内置超长包（如 1408B LAN 视频帧）无阻塞不可靠分片重组。
@@ -27,7 +27,7 @@
 要求 Go 1.24+：
 
 ```bash
-make build              # Linux 本机 -> bin/quicbeam
+make build              # Linux -> bin/quicbeam
 make build-windows      # Windows amd64 -> bin/quicbeam.exe
 make build-macos        # macOS Apple Silicon (arm64) -> bin/quicbeam-darwin-arm64
 make build-macos-amd64  # macOS Intel (amd64) -> bin/quicbeam-darwin-amd64
@@ -67,9 +67,9 @@ make test               # 全量单元测试（含 -race 竞争检测）
 ./bin/quicbeam client -config client.json
 ```
 
-打开 **Moonlight**（Linux / Windows / Android）手动添加主机 **`127.0.0.1`**，即可经 `UDP 443` QUIC Datagram 串流。
+打开 **Moonlight**（Linux / Windows / MacOS / Android）手动添加主机 **`127.0.0.1`**，即可经 `UDP 443` QUIC Datagram 串流。
 
-> **关于 `port_hop_interval_sec` 的重要避坑说明**：默认值为 `0`（关闭），**在按四元组识别 TLS ClientHello 放行 443 白名单的国内家宽线路（如江苏电信）上请保持关闭**。实测 QUIC 原生 Connection Migration（`path.Switch()`）切换到新源端口后不再发送 QUIC Initial / TLS 1.3 ClientHello，仅发 1-RTT 短头密文，会导致新四元组被运营商 QoS 识别为未知 UDP 并锁死在 **~2 Mbps**（而保持完整 `h3` 握手的原四元组可稳跑 **86+ Mbps**）。
+> **关于 `port_hop_interval_sec` 的重要避坑说明**：默认值为 `0`（关闭），**在按四元组识别 TLS ClientHello 放行 443 白名单的国内家宽线路上请保持关闭**。实测 QUIC 原生 Connection Migration（`path.Switch()`）切换到新源端口后不再发送 QUIC Initial / TLS 1.3 ClientHello，仅发 1-RTT 短头密文，会导致新四元组被运营商 QoS 识别为未知 UDP 并锁死在 **~2 Mbps**（而保持完整 `h3` 握手的原四元组可稳跑 **86+ Mbps**）。
 >
 > 如需动态 IP 自动追踪与双端 NAT 打洞，可将 [deploy/cf-worker-signal.js](./deploy/cf-worker-signal.js) 部署到 Cloudflare Workers（绑定 KV 命名空间 `QUICBEAM_KV`），信令端仅存储由 `PSK` 派生的 AES-256-GCM 密文。
 
@@ -101,7 +101,7 @@ quicbeam/
 
 ## 路线图（Roadmap）
 
-- [x] **Phase 0（链路验证）**：实现 `quicbeam probe`，在江苏电信家宽实测 `UDP 443` QUIC Stream 15s 稳跑 **93.4 Mbps**、RFC 9221 Datagram 60 Mbps 15s **0.00% 丢包**（握手 ~12ms）。
+- [x] **Phase 0（链路验证）**：实现 `quicbeam probe`，实测 `UDP 443` QUIC Stream 15s 稳跑 **93.4 Mbps**、RFC 9221 Datagram 60 Mbps 15s **0.00% 丢包**（握手 ~12ms）。
 - [x] **Phase 1（MVP 对称直连隧道）**：实现 `server` / `client` 点对点隧道，支持 TCP Stream（SSH / Sunshine 控制）与 RFC 9221 UDP Datagram（Moonlight 音视频/输入 + 超长包不可靠分片），已实机跑通 Moonlight 串流与 SSH。
 - [x] **Phase 2（自动穿透、打洞与跳端口）**：实现纯 Go STUN + IPv6 探测、AES-256-GCM 加密信令、RFC 7983 同 Socket 双端 Cone NAT 打洞、QUIC Make-Before-Break Port Hopping、TLS `cert_sha256` 指纹钉扎、`keygen` 与出口目标白名单。
 
