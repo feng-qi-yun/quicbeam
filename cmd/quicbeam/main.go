@@ -13,10 +13,11 @@ import (
 	"github.com/feng-qi-yun/quicbeam/internal/config"
 	"github.com/feng-qi-yun/quicbeam/internal/forward"
 	"github.com/feng-qi-yun/quicbeam/internal/probe"
+	qsignal "github.com/feng-qi-yun/quicbeam/internal/signal"
 	"github.com/feng-qi-yun/quicbeam/internal/transport"
 )
 
-const version = "0.1.0-dev"
+const version = "0.2.0-dev"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -38,6 +39,11 @@ func main() {
 	case "probe":
 		if err := runProbeCmd(os.Args[2:]); err != nil {
 			slog.Error("probe failed", "err", err)
+			os.Exit(1)
+		}
+	case "stun":
+		if err := runStunCmd(os.Args[2:]); err != nil {
+			slog.Error("stun failed", "err", err)
 			os.Exit(1)
 		}
 	case "version", "-v", "--version":
@@ -146,6 +152,37 @@ func runProbeCmd(args []string) error {
 	return nil
 }
 
+func runStunCmd(args []string) error {
+	fs := flag.NewFlagSet("stun", flag.ExitOnError)
+	server := fs.String("server", "", "specific STUN server host:port (uses built-in defaults if empty)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	servers := config.DefaultSTUNServers
+	if *server != "" {
+		servers = []string{*server}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ep, stunSrv, err := qsignal.DiscoverEndpoint(ctx, "probe", 0, servers)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Public IPv4 : %s (port %d via %s)\n", ep.IPv4, ep.Port, stunSrv)
+	if len(ep.IPv6) == 0 {
+		fmt.Println("Global IPv6 : (none)")
+	} else {
+		for _, ip := range ep.IPv6 {
+			fmt.Printf("Global IPv6 : %s\n", ip)
+		}
+	}
+	return nil
+}
+
 func printUsage() {
 	fmt.Println(`quicbeam - Anti-DPI QUIC (UDP 443 / RFC 9221 Datagram) P2P tunnel for low-latency streaming
 
@@ -153,8 +190,9 @@ Usage:
   quicbeam <command> [flags]
 
 Commands:
-  server    Run tunnel server (home desktop / Sunshine host)
-  client    Run tunnel client (laptop / Moonlight client)
+  server    Run tunnel server (listen UDP 443 + optional STUN/signal publish)
+  client    Run tunnel client (dial peer + optional signal discovery & port hopping)
   probe     Benchmark sustained UDP 443 QUIC Datagram / Stream throughput
+  stun      Discover public IPv4 (STUN) and global IPv6 addresses
   version   Print version information`)
 }

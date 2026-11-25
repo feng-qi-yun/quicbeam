@@ -4,6 +4,14 @@
   "server_name": "www.cloudflare.com",
   "alpn": "h3",
   "psk": "CHANGE_ME_STRONG_RANDOM_PSK",
+  "port_hop_interval_sec": 0,
+  "signal": {
+    "url": "",
+    "room": "home-desktop",
+    "token": "",
+    "publish_interval_sec": 60,
+    "prefer_ipv6": false
+  },
   "forwards": [
     {
       "name": "ssh",

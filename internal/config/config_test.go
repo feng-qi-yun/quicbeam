@@ -94,3 +94,27 @@ func TestConfigLoad(t *testing.T) {
 		t.Fatalf("unexpected loaded config: %+v", cfg)
 	}
 }
+
+func TestConfigSignalDefaults(t *testing.T) {
+	cfg := &Config{
+		Role:               "client",
+		PSK:                "secret",
+		PortHopIntervalSec: 120,
+		Signal: &SignalConfig{
+			URL:  "https://signal.example.com/",
+			Room: "home-desktop",
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected valid signal client config, got %v", err)
+	}
+	if cfg.Signal.URL != "https://signal.example.com" {
+		t.Fatalf("expected trimmed URL, got %q", cfg.Signal.URL)
+	}
+	if cfg.Signal.PublishIntervalSec != 60 {
+		t.Fatalf("expected default publish_interval_sec=60, got %d", cfg.Signal.PublishIntervalSec)
+	}
+	if len(cfg.Signal.STUNServers) == 0 {
+		t.Fatalf("expected default STUN servers")
+	}
+}

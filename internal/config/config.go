@@ -16,6 +16,23 @@ const (
 	ProtoUDP = "udp"
 )
 
+// DefaultSTUNServers are used when SignalConfig.STUNServers is omitted.
+var DefaultSTUNServers = []string{
+	"stun.miwifi.com:3478",
+	"stun.chat.bilibili.com:3478",
+	"stun.cloudflare.com:3478",
+}
+
+// SignalConfig configures STUN endpoint discovery and encrypted HTTP/KV signaling.
+type SignalConfig struct {
+	URL                string   `json:"url"`                  // base URL, e.g. "https://signal.example.workers.dev"
+	Room               string   `json:"room"`                 // logical tunnel room name
+	Token              string   `json:"token,omitempty"`      // optional HTTP Bearer token
+	STUNServers        []string `json:"stun_servers,omitempty"`
+	PublishIntervalSec int      `json:"publish_interval_sec,omitempty"` // default 60
+	PreferIPv6         bool     `json:"prefer_ipv6,omitempty"`
+}
+
 // PortForward defines a single TCP or UDP port forwarding mapping over the QUIC tunnel.
 type PortForward struct {
 	Name   string `json:"name"`
@@ -26,16 +43,18 @@ type PortForward struct {
 
 // Config holds the runtime configuration for quicbeam server or client.
 type Config struct {
-	Role               string        `json:"role"`                 // "server" or "client"
-	ListenAddr         string        `json:"listen_addr"`          // e.g. ":443" (server mode)
-	RemoteAddr         string        `json:"remote_addr"`          // peer address (client mode)
-	ServerName         string        `json:"server_name"`          // TLS SNI, default "www.cloudflare.com"
-	ALPN               string        `json:"alpn"`                 // default "h3"
-	CertFile           string        `json:"cert_file"`            // optional PEM cert (server mode)
-	KeyFile            string        `json:"key_file"`             // optional PEM key (server mode)
-	InsecureSkipVerify bool          `json:"insecure_skip_verify"` // skip TLS cert check (client mode, for self-signed)
-	PSK                string        `json:"psk"`                  // pre-shared key for session authentication
-	Forwards           []PortForward `json:"forwards"`             // local ports to listen and forward to peer
+	Role               string        `json:"role"`                            // "server" or "client"
+	ListenAddr         string        `json:"listen_addr"`                     // e.g. ":443" (server mode)
+	RemoteAddr         string        `json:"remote_addr"`                     // peer address (client mode; optional if signal.url is set)
+	ServerName         string        `json:"server_name"`                     // TLS SNI, default "www.cloudflare.com"
+	ALPN               string        `json:"alpn"`                            // default "h3"
+	CertFile           string        `json:"cert_file"`                       // optional PEM cert (server mode)
+	KeyFile            string        `json:"key_file"`                        // optional PEM key (server mode)
+	InsecureSkipVerify bool          `json:"insecure_skip_verify"`            // skip TLS cert check (client mode, for self-signed)
+	PSK                string        `json:"psk"`                             // pre-shared key for session auth & signal encryption
+	PortHopIntervalSec int           `json:"port_hop_interval_sec,omitempty"` // client Make-Before-Break port hopping interval (0 = disabled)
+	Signal             *SignalConfig `json:"signal,omitempty"`                // optional STUN + encrypted signaling config
+	Forwards           []PortForward `json:"forwards"`                        // local ports to listen and forward to peer
 }
 
 // Load reads, parses, and validates a JSON configuration file.
@@ -69,8 +88,27 @@ func (c *Config) Validate() error {
 	if c.Role == RoleServer && c.ListenAddr == "" {
 		c.ListenAddr = ":443"
 	}
-	if c.Role == RoleClient && c.RemoteAddr == "" {
-		return fmt.Errorf("remote_addr is required in client mode")
+	if c.PortHopIntervalSec < 0 {
+		return fmt.Errorf("port_hop_interval_sec must be >= 0")
+	}
+
+	hasSignal := c.Signal != nil && strings.TrimSpace(c.Signal.URL) != ""
+	if hasSignal {
+		c.Signal.URL = strings.TrimRight(strings.TrimSpace(c.Signal.URL), "/")
+		c.Signal.Room = strings.TrimSpace(c.Signal.Room)
+		if c.Signal.Room == "" {
+			return fmt.Errorf("signal.room is required when signal.url is set")
+		}
+		if c.Signal.PublishIntervalSec <= 0 {
+			c.Signal.PublishIntervalSec = 60
+		}
+		if len(c.Signal.STUNServers) == 0 {
+			c.Signal.STUNServers = append([]string(nil), DefaultSTUNServers...)
+		}
+	}
+
+	if c.Role == RoleClient && c.RemoteAddr == "" && !hasSignal {
+		return fmt.Errorf("remote_addr is required in client mode when signal.url is not configured")
 	}
 	if (c.CertFile != "" && c.KeyFile == "") || (c.CertFile == "" && c.KeyFile != "") {
 		return fmt.Errorf("cert_file and key_file must be specified together")
@@ -99,8 +137,8 @@ func (c *Config) Validate() error {
 			udpCount++
 		}
 	}
-	if udpCount > 255 {
-		return fmt.Errorf("too many UDP forwards (%d): maximum supported is 255", udpCount)
+	if udpCount > 127 {
+		return fmt.Errorf("too many UDP forwards (%d): maximum supported per peer is 127", udpCount)
 	}
 	return nil
 }
