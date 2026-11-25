@@ -18,7 +18,7 @@ import (
 	"github.com/feng-qi-yun/quicbeam/internal/transport"
 )
 
-const version = "0.3.0-dev"
+const version = "0.1.0"
 
 func main() {
 	if len(os.Args) < 2 {

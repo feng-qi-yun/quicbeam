@@ -16,7 +16,7 @@
 - **双端 Cone NAT 打洞 & 可选无感跳端口（Port Hopping）**：
   - 基于 RFC 7983 首字节复用，在**同一 UDP Socket** 上并发完成 STUN 探测、AES-256-GCM 密文信令交换、双向 UDP 打洞与 QUIC 握手；
   - 支持依托 QUIC 原生 Connection Migration（Make-Before-Break）的定时换源端口（默认关闭 `port_hop_interval_sec: 0`）。
-- **单文件跨平台（Linux / Windows / Android Termux）**：纯 Go（`CGO_ENABLED=0`），零外部驱动，免 Root。
+- **单文件跨平台（Linux / Windows / macOS / Android Termux）**：纯 Go（`CGO_ENABLED=0`），零外部驱动，免 Root。
 
 ---
 
@@ -27,10 +27,12 @@
 要求 Go 1.24+：
 
 ```bash
-make build          # Linux 本机 -> bin/quicbeam
-make build-windows  # Windows amd64 -> bin/quicbeam.exe
-make build-android  # Android (Termux) arm64 -> bin/quicbeam-android-arm64
-make test           # 全量单元测试（含 -race 竞争检测）
+make build              # Linux 本机 -> bin/quicbeam
+make build-windows      # Windows amd64 -> bin/quicbeam.exe
+make build-macos        # macOS Apple Silicon (arm64) -> bin/quicbeam-darwin-arm64
+make build-macos-amd64  # macOS Intel (amd64) -> bin/quicbeam-darwin-amd64
+make build-android      # Android (Termux) arm64 -> bin/quicbeam-android-arm64
+make test               # 全量单元测试（含 -race 竞争检测）
 ```
 
 ### 2. 生成自签证书、指纹与随机 PSK
